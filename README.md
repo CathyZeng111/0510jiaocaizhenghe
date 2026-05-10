@@ -183,4 +183,4 @@ npm run dev
 ## RAG 评测产物
 
 - 评测集：`artifacts/rag_eval_dataset.json`
-- 说明文档：[docs/功能6-RAG评测.md](</Users/cathyzeng/Documents/New project 3/docs/功能6-RAG评测.md>)
+- 说明文档：[docs/功能6-RAG评测.md](docs/功能6-RAG评测.md)

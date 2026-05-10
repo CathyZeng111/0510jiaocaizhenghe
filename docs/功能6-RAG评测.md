@@ -18,8 +18,8 @@
 
 对应代码：
 
-- [backend/app/rag_eval.py](</Users/cathyzeng/Documents/New project 3/backend/app/rag_eval.py>)
-- [backend/app/rag_eval_schemas.py](</Users/cathyzeng/Documents/New project 3/backend/app/rag_eval_schemas.py>)
+- [backend/app/rag_eval.py](../backend/app/rag_eval.py)
+- [backend/app/rag_eval_schemas.py](../backend/app/rag_eval_schemas.py)
 
 ## 评测集生成策略
 
@@ -32,7 +32,7 @@
 
 当前已生成评测集：
 
-- [artifacts/rag_eval_dataset.json](</Users/cathyzeng/Documents/New project 3/artifacts/rag_eval_dataset.json>)
+- [artifacts/rag_eval_dataset.json](../artifacts/rag_eval_dataset.json)
 
 ## 当前数据集概况
 
