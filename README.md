@@ -1,3 +1,9 @@
+---
+title: AI Textbook Integrator
+sdk: docker
+app_port: 7860
+---
+
 # 学科知识整合智能体
 
 当前阶段完成 P0 的教材加载解析，并加入单本教材知识图谱构建与可视化。
