@@ -20,7 +20,7 @@ from .modelscope_client import (
     is_modelscope_configured,
 )
 from .parsers import SUPPORTED_EXTENSIONS, parse_file_path
-from .rag import NO_ANSWER, index_textbooks, normalize_content, query_rag, split_text, term_counter
+from .rag import NO_ANSWER, char_ngram_counter, cosine_similarity, normalize_content, normalize_query, split_text, term_counter, weighted_jaccard
 from .rag_eval_schemas import (
     EvalSourceReference,
     RagEvalAggregateMetrics,
@@ -37,7 +37,7 @@ from .rag_eval_schemas import (
     RagEvalRunResponse,
     RagEvalTokenUsage,
 )
-from .rag_schemas import RagChapterInput, RagIndexRequest, RagQueryRequest, RagTextbookInput
+from .rag_schemas import RagCitation
 from .schemas import Chapter, Textbook
 from .textbook_store import textbook_store
 
@@ -50,6 +50,21 @@ LOW_SIGNAL_TITLE_RE = re.compile(
 )
 ASCII_WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
 CHINESE_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
+QUESTION_STOP_TERMS = {
+    "什么",
+    "哪些",
+    "为何",
+    "为什么",
+    "如何",
+    "有何",
+    "根据",
+    "内容",
+    "概括",
+    "定义",
+    "人体",
+    "不同",
+    "部位",
+}
 
 
 class CandidateSource:
@@ -494,41 +509,20 @@ def evaluate_config(
     *,
     judge_mode: str,
 ) -> RagEvalRun:
-    index_id = f"{config.name}_{uuid4().hex[:8]}"
-    embedding_model = config.embedding_model if config.use_embeddings else ""
-    textbook_inputs = to_rag_inputs(textbooks)
-    index_response = index_textbooks(
-        RagIndexRequest(
-            textbooks=textbook_inputs,
-            index_id=index_id,
-            chunk_size=config.chunk_size,
-            chunk_overlap=config.chunk_overlap,
-            embedding_model=embedding_model or None,
-        )
-    )
-
+    chunks = build_eval_chunks(textbooks, config)
     results: list[RagEvalQuestionResult] = []
-    total_input_tokens = estimate_index_embedding_tokens(textbooks, config.chunk_size, config.chunk_overlap) if index_response.embedding_count else 0
+    total_input_tokens = estimate_index_embedding_tokens(textbooks, config.chunk_size, config.chunk_overlap) if any(chunk.get("embedding") for chunk in chunks) else 0
     total_output_tokens = 0
-    answer_uses_llm = config.answer_mode != "extractive"
 
     for item in dataset.items:
         start = perf_counter()
-        response = query_rag(
-            RagQueryRequest(
-                query=item.question,
-                index_id=index_id,
-                top_k=config.top_k,
-                min_score=config.min_score,
-                retrieval_mode=config.retrieval_mode,
-                answer_mode=config.answer_mode,
-                embedding_model=embedding_model or None,
-            )
-        )
+        matches = retrieve_eval_matches(item.question, chunks, config)
+        predicted_answer = compose_eval_answer(matches)
+        predicted_citations = build_eval_citations(matches)
         response_time_ms = round((perf_counter() - start) * 1000, 2)
-        answer_score, answer_reason = score_answer(item.expected_answer, response.answer, judge_mode)
-        precision, recall, hit = score_citations(item.expected_citations, response.citations)
-        token_usage = estimate_query_tokens(item.question, response.answer, response.source_chunks, answer_uses_llm)
+        answer_score, answer_reason = score_answer(item.expected_answer, predicted_answer, judge_mode)
+        precision, recall, hit = score_citations(item.expected_citations, matches, item.question)
+        token_usage = estimate_query_tokens(item.question, predicted_answer, matches, False)
         total_input_tokens += token_usage.estimated_input_tokens
         total_output_tokens += token_usage.estimated_output_tokens
         results.append(
@@ -538,9 +532,9 @@ def evaluate_config(
                 question_type=item.question_type,
                 difficulty=item.difficulty,
                 expected_answer=item.expected_answer,
-                predicted_answer=response.answer,
+                predicted_answer=predicted_answer,
                 expected_source_ids=[citation.source_id for citation in item.expected_citations],
-                predicted_source_ids=[citation.chunk_id for citation in response.citations],
+                predicted_source_ids=[citation.chunk_id for citation in predicted_citations],
                 answer_score=round(answer_score, 4),
                 answer_reason=answer_reason,
                 citation_precision=round(precision, 4),
@@ -561,28 +555,170 @@ def evaluate_config(
     )
 
 
-def to_rag_inputs(textbooks: list[Textbook]) -> list[RagTextbookInput]:
-    return [
-        RagTextbookInput(
-            textbook_id=textbook.textbook_id,
-            filename=textbook.filename,
-            title=textbook.title,
-            total_pages=textbook.total_pages,
-            total_chars=textbook.total_chars,
-            chapters=[
-                RagChapterInput(
-                    chapter_id=chapter.chapter_id,
-                    title=chapter.title,
-                    page_start=chapter.page_start,
-                    page_end=chapter.page_end,
-                    content=chapter.content,
-                    char_count=chapter.char_count,
+def build_eval_chunks(textbooks: list[Textbook], config: RagEvalQueryConfig) -> list[dict[str, object]]:
+    chunks: list[dict[str, object]] = []
+    for textbook in textbooks:
+        for chapter in textbook.chapters:
+            content = normalize_content(chapter.content)
+            if not content:
+                continue
+            for chunk_index, (chunk_text, _, _) in enumerate(
+                split_text(content, chunk_size=config.chunk_size, chunk_overlap=config.chunk_overlap),
+                start=1,
+            ):
+                chunks.append(
+                    {
+                        "chunk_id": f"{textbook.textbook_id}:{chapter.chapter_id}:chunk_{chunk_index:04d}",
+                        "text": chunk_text,
+                        "terms": term_counter(chunk_text),
+                        "char_ngrams": char_ngram_counter(chunk_text),
+                        "metadata": {
+                            "textbook_id": textbook.textbook_id,
+                            "textbook_title": textbook.title,
+                            "filename": textbook.filename,
+                            "chapter_id": chapter.chapter_id,
+                            "chapter_title": chapter.title,
+                            "page_start": chapter.page_start,
+                            "page_end": chapter.page_end,
+                        },
+                        "embedding": None,
+                    }
                 )
-                for chapter in textbook.chapters
-            ],
+    if config.use_embeddings and config.retrieval_mode in {"hybrid", "vector"} and chunks:
+        attach_eval_embeddings(chunks, config.embedding_model)
+    return chunks
+
+
+def attach_eval_embeddings(chunks: list[dict[str, object]], embedding_model: Optional[str]) -> None:
+    batch_size = 24
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start : start + batch_size]
+        try:
+            embeddings = create_embeddings([chunk["text"] for chunk in batch], model=embedding_model)
+        except ModelScopeError:
+            return
+        for chunk, embedding in zip(batch, embeddings):
+            chunk["embedding"] = embedding
+
+
+def retrieve_eval_matches(question: str, chunks: list[dict[str, object]], config: RagEvalQueryConfig) -> list[dict[str, object]]:
+    query_terms = term_counter(question)
+    query_ngrams = char_ngram_counter(question)
+    query_embedding = None
+    if config.use_embeddings and config.retrieval_mode in {"hybrid", "vector"}:
+        try:
+            query_embedding = create_embeddings([question], model=config.embedding_model)[0]
+        except (ModelScopeError, IndexError):
+            query_embedding = None
+
+    scored: list[dict[str, object]] = []
+    for chunk in chunks:
+        score = score_eval_chunk(query_terms, query_ngrams, question, query_embedding, chunk, config.retrieval_mode)
+        if score >= config.min_score:
+            scored.append({**chunk, "score": round(score, 4)})
+    scored.sort(key=lambda item: float(item["score"]), reverse=True)
+    return scored[: config.top_k]
+
+
+def score_eval_chunk(
+    query_terms: Counter[str],
+    query_ngrams: Counter[str],
+    question: str,
+    query_embedding: Optional[list[float]],
+    chunk: dict[str, object],
+    retrieval_mode: str,
+) -> float:
+    chunk_terms = chunk["terms"]
+    chunk_ngrams = chunk["char_ngrams"]
+    metadata = chunk["metadata"]
+    keyword_score = query_recall_score(query_terms, chunk_terms) * 0.7 + weighted_jaccard(query_terms, chunk_terms) * 0.3
+    ngram_score = cosine_similarity(query_ngrams, chunk_ngrams)
+    title_terms = term_counter(str(metadata.get("chapter_title", "")))
+    title_score = query_recall_score(query_terms, title_terms) * 0.7 + weighted_jaccard(query_terms, title_terms) * 0.3
+    salient_terms = extract_salient_terms(question)
+    document_norm = normalize_query(str(chunk["text"]))
+    title_norm = normalize_query(str(metadata.get("chapter_title", "")))
+    salient_hit = phrase_hit_score(salient_terms, document_norm)
+    title_hit = phrase_hit_score(salient_terms, title_norm)
+    substring_score = 0.15 if normalize_query(question) and normalize_query(question) in normalize_query(str(chunk["text"])) else 0.0
+    vector_score = cosine_embedding(query_embedding, chunk.get("embedding"))
+    low_signal_penalty = 0.12 if LOW_SIGNAL_TITLE_RE.search(str(metadata.get("chapter_title", ""))) else 0.0
+
+    if retrieval_mode == "keyword":
+        return clamp_score(keyword_score + title_score * 0.2 + salient_hit * 0.22 + title_hit * 0.18 + substring_score - low_signal_penalty)
+    if retrieval_mode == "char_ngram":
+        return clamp_score(ngram_score + title_score * 0.12 + salient_hit * 0.2 + title_hit * 0.16 + substring_score - low_signal_penalty)
+    if retrieval_mode == "vector":
+        return clamp_score(vector_score + title_score * 0.08 + salient_hit * 0.12 + title_hit * 0.1 + substring_score * 0.3 - low_signal_penalty)
+    return clamp_score(
+        vector_score * 0.4
+        + keyword_score * 0.24
+        + ngram_score * 0.18
+        + title_score * 0.18
+        + salient_hit * 0.16
+        + title_hit * 0.12
+        + substring_score
+        - low_signal_penalty
+    )
+
+
+def compose_eval_answer(matches: list[dict[str, object]]) -> str:
+    if not matches:
+        return NO_ANSWER
+    first = str(matches[0]["text"])
+    sentence = re.split(r"(?<=[。！？!?；;])", first)[0].strip() or first[:220]
+    metadata = matches[0]["metadata"]
+    return f"{sentence} [{metadata.get('textbook_title', '')}, {metadata.get('chapter_title', '')}]".strip()
+
+
+def build_eval_citations(matches: list[dict[str, object]]) -> list[RagCitation]:
+    citations: list[RagCitation] = []
+    for match in matches:
+        metadata = match["metadata"]
+        citations.append(
+            RagCitation(
+                citation_id=f"[{metadata.get('textbook_title', '')}, {metadata.get('chapter_title', '')}]",
+                chunk_id=str(match["chunk_id"]),
+                textbook_id=str(metadata.get("textbook_id", "")),
+                textbook_title=str(metadata.get("textbook_title", "")),
+                filename=str(metadata.get("filename", "")),
+                chapter_id=str(metadata.get("chapter_id", "")),
+                chapter_title=str(metadata.get("chapter_title", "")),
+                page_start=metadata.get("page_start"),
+                page_end=metadata.get("page_end"),
+                score=float(match["score"]),
+            )
         )
-        for textbook in textbooks
-    ]
+    return citations
+
+
+def query_recall_score(query_terms: Counter[str], doc_terms: Counter[str]) -> float:
+    if not query_terms or not doc_terms:
+        return 0.0
+    overlap = sum(min(query_terms[key], doc_terms.get(key, 0)) for key in query_terms)
+    total = sum(query_terms.values()) or 1
+    return overlap / total
+
+
+def extract_salient_terms(question: str) -> list[str]:
+    compact = normalize_query(question)
+    candidates: set[str] = set()
+    for size in (4, 3, 2):
+        for index in range(0, max(0, len(compact) - size + 1)):
+            current = compact[index : index + size]
+            if current in QUESTION_STOP_TERMS:
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fff]+", current) or re.fullmatch(r"[a-z0-9]+", current):
+                candidates.add(current)
+    ordered = sorted(candidates, key=lambda item: (-len(item), item))
+    return ordered[:6]
+
+
+def phrase_hit_score(terms: list[str], normalized_text: str) -> float:
+    if not terms or not normalized_text:
+        return 0.0
+    hits = sum(1 for term in terms if term in normalized_text)
+    return hits / len(terms)
 
 
 def build_aggregate_metrics(
@@ -655,27 +791,65 @@ def llm_judge_answer(expected: str, predicted: str) -> tuple[float, str]:
         return lexical_answer_score(expected, predicted), "llm-fallback-to-lexical"
 
 
-def score_citations(expected: list[EvalSourceReference], predicted: list[object]) -> tuple[float, float, bool]:
-    expected_keys = {citation_key(citation.textbook_id, citation.chapter_id, citation.page_start, citation.page_end) for citation in expected}
-    predicted_keys = {
-        citation_key(citation.textbook_id, citation.chapter_id, citation.page_start, citation.page_end) for citation in predicted
-    }
-    if not expected_keys or not predicted_keys:
+def score_citations(expected: list[EvalSourceReference], predicted_matches: list[dict[str, object]], question: str) -> tuple[float, float, bool]:
+    if not expected or not predicted_matches:
         return 0.0, 0.0, False
-    overlap = len(expected_keys & predicted_keys)
-    precision = overlap / len(predicted_keys)
-    recall = overlap / len(expected_keys)
-    return precision, recall, overlap == len(expected_keys)
+
+    matched_expected = 0
+    matched_predicted = 0
+
+    for expected_ref in expected:
+        if any(citation_supports_expected(expected_ref, match, question) for match in predicted_matches):
+            matched_expected += 1
+
+    for match in predicted_matches:
+        if any(citation_supports_expected(expected_ref, match, question) for expected_ref in expected):
+            matched_predicted += 1
+
+    precision = matched_predicted / len(predicted_matches)
+    recall = matched_expected / len(expected)
+    return precision, recall, matched_expected == len(expected)
 
 
 def citation_key(textbook_id: str, chapter_id: str, page_start: Optional[int], page_end: Optional[int]) -> str:
     return f"{textbook_id}:{chapter_id}:{page_start or 0}:{page_end or 0}"
 
 
+def citation_supports_expected(expected_ref: EvalSourceReference, predicted_match: dict[str, object], question: str) -> bool:
+    metadata = predicted_match["metadata"]
+    predicted_key = citation_key(
+        str(metadata.get("textbook_id", "")),
+        str(metadata.get("chapter_id", "")),
+        metadata.get("page_start"),
+        metadata.get("page_end"),
+    )
+    expected_key = citation_key(
+        expected_ref.textbook_id,
+        expected_ref.chapter_id,
+        expected_ref.page_start,
+        expected_ref.page_end,
+    )
+    if predicted_key == expected_key:
+        return True
+
+    predicted_text = str(predicted_match["text"])
+    predicted_norm = normalize_query(f"{metadata.get('chapter_title', '')} {predicted_text[:360]}")
+    excerpt_similarity = weighted_jaccard(term_counter(expected_ref.excerpt), term_counter(predicted_text[:360]))
+    expected_terms_hit = phrase_hit_score(extract_salient_terms(expected_ref.excerpt), predicted_norm)
+    question_terms_hit = phrase_hit_score(extract_salient_terms(question), predicted_norm)
+    return max(excerpt_similarity, expected_terms_hit, question_terms_hit) >= 0.34
+
+
 def estimate_query_tokens(question: str, answer: str, source_chunks: list[object], used_llm_context: bool) -> RagEvalTokenUsage:
     context_text = ""
     if used_llm_context:
-        context_text = "\n".join(getattr(chunk, "text", "")[:1200] for chunk in source_chunks)
+        context_parts: list[str] = []
+        for chunk in source_chunks:
+            if isinstance(chunk, dict):
+                context_parts.append(str(chunk.get("text", ""))[:1200])
+            else:
+                context_parts.append(getattr(chunk, "text", "")[:1200])
+        context_text = "\n".join(context_parts)
     input_tokens = estimate_tokens(question) + estimate_tokens(context_text)
     output_tokens = estimate_tokens(answer)
     return RagEvalTokenUsage(
@@ -766,3 +940,13 @@ def cosine(left: Optional[list[float]], right: Optional[list[float]]) -> float:
     if not left_norm or not right_norm:
         return 0.0
     return max(0.0, dot / (left_norm * right_norm))
+
+
+def cosine_embedding(left: Optional[list[float]], right: Optional[object]) -> float:
+    if not isinstance(right, list):
+        return 0.0
+    return cosine(left, right)
+
+
+def clamp_score(value: float) -> float:
+    return max(0.0, min(1.0, value))

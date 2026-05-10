@@ -53,6 +53,26 @@ export type IntegrationDecision = {
   similarity: SimilarityBreakdown | null;
 };
 
+export type ConflictDefinitionSource = {
+  node_id: string;
+  node_name: string;
+  textbook_id: string;
+  textbook_title: string;
+  definition: string | null;
+};
+
+export type KnowledgeConflict = {
+  conflict_id: string;
+  normalized_name: string;
+  node_ids: string[];
+  node_names: string[];
+  textbook_titles: string[];
+  token_jaccard: number;
+  definition_jaccard: number;
+  reason: string;
+  definitions: ConflictDefinitionSource[];
+};
+
 export type CompressionStats = {
   source_graph_count: number;
   source_node_count: number;
@@ -81,6 +101,7 @@ export type GraphIntegrationResult = {
   decisions: IntegrationDecision[];
   merged_graph: IntegratedKnowledgeGraph;
   stats: CompressionStats;
+  conflicts: KnowledgeConflict[];
 };
 
 export type TeacherFeedbackChange = {
@@ -91,6 +112,22 @@ export type TeacherFeedbackChange = {
 };
 
 export type TeacherFeedbackResult = {
+  result: GraphIntegrationResult;
+  changes: TeacherFeedbackChange[];
+  unapplied: string[];
+};
+
+export type IntegrationChatMessage = {
+  message_id: string;
+  role: "teacher" | "system";
+  content: string;
+  created_at: string;
+};
+
+export type IntegrationChatResponse = {
+  session_id: string;
+  reply: string;
+  history: IntegrationChatMessage[];
   result: GraphIntegrationResult;
   changes: TeacherFeedbackChange[];
   unapplied: string[];

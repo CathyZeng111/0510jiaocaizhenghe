@@ -19,13 +19,13 @@
 
 默认参数：
 
-- `chunk_size = 650`，接口限制为 500-800 字。
+- `chunk_size = 800`，接口限制为 500-800 字。
 - `chunk_overlap = 80`，接口限制为 50-100 字。
 - 分块策略：sliding window，并尽量在句号、问号、分号或换行附近切断。
 
-选择 650 字和 80 字重叠的理由：
+选择 800 字和 80 字重叠的理由：
 
-- 医学教材中一个概念定义、机制解释或临床说明通常在数百字内可以完整表达，650 字足够容纳一个局部知识单元。
+- 医学教材中一个概念定义、机制解释或临床说明通常在数百字内可以完整表达，800 字足够容纳一个较完整的局部知识单元，同时能减少 chunk 数量。
 - 500-800 字适合塞入 LLM 上下文，不会让 top-5 chunk 过长。
 - 80 字重叠可以降低“定义在上一块、解释在下一块”造成的截断风险。
 
@@ -96,12 +96,12 @@ ModelScope: deepseek-ai/DeepSeek-V4-Flash
   "textbook_count": 1,
   "chapter_count": 10,
   "chunk_count": 120,
-  "chunk_size": 650,
+  "chunk_size": 800,
   "chunk_overlap": 80,
   "embedding_model": "qwen/qwen3-embedding-8b",
   "embedding_count": 120,
   "vector_store_type": "chroma",
-  "chunking_strategy": "sliding_window_500_800_overlap_50_100"
+  "chunking_strategy": "sliding_window_800_overlap_80"
 }
 ```
 
@@ -119,7 +119,7 @@ ModelScope: deepseek-ai/DeepSeek-V4-Flash
     "embedding_model": "qwen/qwen3-embedding-8b",
     "embedding_count": 120,
     "vector_store_type": "chroma",
-    "chunking_strategy": "sliding_window_500_800_overlap_50_100",
+    "chunking_strategy": "sliding_window_800_overlap_80",
     "top_k": 5,
     "min_score": 0.08,
     "matched_chunks": 5

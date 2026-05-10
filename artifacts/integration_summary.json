@@ -1,0 +1,103 @@
+{
+  "textbook_count": 7,
+  "source_graph_count": 7,
+  "source_node_count": 1011,
+  "source_edge_count": 1525,
+  "merged_node_count": 296,
+  "merged_edge_count": 308,
+  "removed_node_count": 522,
+  "merge_group_count": 30,
+  "conflict_count": 1,
+  "compression_ratio": 0.2928,
+  "node_reduction_ratio": 0.7072,
+  "source_char_count": 73635,
+  "merged_char_count": 22084,
+  "char_compression_ratio": 0.2999,
+  "char_budget": 22090,
+  "budget_met": true,
+  "decision_counts": {
+    "keep": 788,
+    "merge": 30,
+    "remove": 522
+  },
+  "relation_counts": {
+    "contains": 766,
+    "prerequisite": 759
+  },
+  "conflict_examples": [
+    {
+      "conflict_id": "conflict_001",
+      "normalized_name": "第三节血栓形成",
+      "textbook_titles": [
+        "05_病理学",
+        "07_病理生理学"
+      ],
+      "token_jaccard": 1.0,
+      "definition_jaccard": 0.2701,
+      "reason": "知识点名称高度一致，但两本教材给出的定义文本重合度较低，建议教师检查是否存在口径、范围或教学侧重点冲突。"
+    }
+  ],
+  "merge_cases": [
+    {
+      "decision_id": "decision_merge_002",
+      "canonical_name": "28 人卫官网 www.pmph.com",
+      "affected_nodes": [
+        "book_01:book_01_ch_117_block",
+        "book_02:book_02_ch_72_block",
+        "book_06:book_06_ch_148_block"
+      ],
+      "result_node": "kg_node_0002",
+      "score": 0.9784,
+      "confidence": 0.9784,
+      "reason": "3 个跨教材节点在名称、定义或 embedding 语义上等价，合并为 28 人卫官网 www.pmph.com。"
+    },
+    {
+      "decision_id": "decision_merge_027",
+      "canonical_name": "录",
+      "affected_nodes": [
+        "book_04:book_04_ch_530_block",
+        "book_06:book_06_ch_144_block"
+      ],
+      "result_node": "kg_node_0027",
+      "score": 0.9,
+      "confidence": 0.9,
+      "reason": "2 个跨教材节点在名称、定义或 embedding 语义上等价，合并为 录。"
+    },
+    {
+      "decision_id": "decision_merge_045",
+      "canonical_name": "液",
+      "affected_nodes": [
+        "book_02:book_02_ch_25_block",
+        "book_03:book_03_ch_26_block"
+      ],
+      "result_node": "kg_node_0045",
+      "score": 0.9,
+      "confidence": 0.9,
+      "reason": "2 个跨教材节点在名称、定义或 embedding 语义上等价，合并为 液。"
+    },
+    {
+      "decision_id": "decision_merge_108",
+      "canonical_name": "第27 章 眼与耳的发生...................................................",
+      "affected_nodes": [
+        "book_02:book_02_ch_07_primary",
+        "book_02:book_02_ch_98_primary"
+      ],
+      "result_node": "kg_node_0108",
+      "score": 0.9882,
+      "confidence": 0.9882,
+      "reason": "2 个跨教材节点在名称、定义或 embedding 语义上等价，合并为 第27 章 眼与耳的发生...................................................。"
+    },
+    {
+      "decision_id": "decision_merge_110",
+      "canonical_name": "第28 章 先天畸形概论...................................................",
+      "affected_nodes": [
+        "book_02:book_02_ch_08_primary",
+        "book_02:book_02_ch_101_primary"
+      ],
+      "result_node": "kg_node_0110",
+      "score": 0.9882,
+      "confidence": 0.9882,
+      "reason": "2 个跨教材节点在名称、定义或 embedding 语义上等价，合并为 第28 章 先天畸形概论...................................................。"
+    }
+  ]
+}

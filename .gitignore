@@ -11,8 +11,11 @@ dist/
 # Local data and uploads
 data/textbooks/*.pdf
 data/chroma/
+data/*.json
+artifacts/integration_result.json
 *.pdf
 
 # Environment
 .env
 .DS_Store
+.codex-deploy/

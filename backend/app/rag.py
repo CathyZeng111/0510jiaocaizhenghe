@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 import shutil
@@ -29,12 +30,14 @@ from .rag_schemas import (
 )
 
 NO_ANSWER = "当前知识库中未找到相关信息"
-CHUNK_SIZE = 650
+CHUNK_SIZE = 800
 CHUNK_OVERLAP = 80
 TOP_K = 5
-CHUNKING_STRATEGY = "sliding_window_500_800_overlap_50_100"
+CHUNKING_STRATEGY = "sliding_window_800_overlap_80"
 RETRIEVAL_MODEL = "chroma_vector_rerank_v2"
 CHROMA_DIR = Path.cwd() / "data" / "chroma"
+RAG_MANIFEST_PATH = Path.cwd() / "data" / "rag_index_manifest.json"
+EMBEDDING_BATCH_SIZE = 96
 SENTENCE_BOUNDARY = "。！？!?；;\n"
 TERM_RE = re.compile(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+")
 LOW_SIGNAL_CHAPTER_RE = re.compile(
@@ -102,19 +105,18 @@ def query_rag(request: RagQueryRequest) -> RagQueryResponse:
     if collection.count() == 0:
         raise HTTPException(status_code=404, detail=f"RAG 索引不存在或为空：{request.index_id}")
 
-    embedding_model = request.embedding_model or default_embedding_model()
-    try:
-        query_embedding = create_embeddings([request.query], model=embedding_model)[0]
-    except (ModelScopeError, IndexError) as exc:
-        raise HTTPException(status_code=502, detail=f"问题向量化失败：{exc}") from exc
+    embedding_model = default_embedding_model() if request.embedding_model is None else request.embedding_model
+    query_embedding: list[float] = []
+    if request.retrieval_mode in {"hybrid", "vector"}:
+        if not embedding_model:
+            raise HTTPException(status_code=400, detail="当前检索模式需要可用的 embedding_model")
+        try:
+            query_embedding = create_embeddings([request.query], model=embedding_model)[0]
+        except (ModelScopeError, IndexError) as exc:
+            raise HTTPException(status_code=502, detail=f"问题向量化失败：{exc}") from exc
 
     top_k = min(request.top_k or TOP_K, TOP_K)
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
-    )
-    matches = chroma_results_to_matches(results)
+    matches = retrieve_matches(collection, request, query_embedding, top_k)
 
     if not matches:
         return RagQueryResponse(
@@ -185,33 +187,52 @@ def update_job(job_id: str, **updates: object) -> None:
 
 
 def index_textbooks(request: RagIndexRequest, progress: Optional[Callable[..., None]] = None) -> RagIndexResponse:
-    embedding_model = request.embedding_model or default_embedding_model()
+    embedding_model = default_embedding_model() if request.embedding_model is None else request.embedding_model
     chunk_size = request.chunk_size or CHUNK_SIZE
     chunk_overlap = request.chunk_overlap or CHUNK_OVERLAP
+    collection_name = collection_name_for_index(request.index_id)
+    fingerprint = request_fingerprint(request.textbooks, chunk_size, chunk_overlap, embedding_model)
+    cached = get_cached_index_response(request.index_id, collection_name, fingerprint)
+    if cached:
+        INDEX_COLLECTIONS[request.index_id] = collection_name
+        if progress:
+            progress(
+                chunk_count=cached.chunk_count,
+                embedding_count=cached.embedding_count,
+                vector_store_type="chroma_cached",
+            )
+        return cached
+
     chunks = build_chunks(request.textbooks, chunk_size, chunk_overlap, embedding_model)
     if progress:
         progress(chunk_count=len(chunks), vector_store_type="chroma")
 
-    collection_name = collection_name_for_index(request.index_id)
     collection = recreate_collection(collection_name)
 
     embedding_count = 0
-    batch_size = 64
+    batch_size = EMBEDDING_BATCH_SIZE
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
-        embeddings = create_embeddings([chunk["text"] for chunk in batch], model=embedding_model)
-        collection.add(
-            ids=[chunk["id"] for chunk in batch],
-            documents=[chunk["text"] for chunk in batch],
-            embeddings=embeddings,
-            metadatas=[chunk["metadata"] for chunk in batch],
-        )
-        embedding_count += len(embeddings)
+        if embedding_model:
+            embeddings = create_embeddings([chunk["text"] for chunk in batch], model=embedding_model)
+            collection.add(
+                ids=[chunk["id"] for chunk in batch],
+                documents=[chunk["text"] for chunk in batch],
+                embeddings=embeddings,
+                metadatas=[chunk["metadata"] for chunk in batch],
+            )
+            embedding_count += len(embeddings)
+        else:
+            collection.add(
+                ids=[chunk["id"] for chunk in batch],
+                documents=[chunk["text"] for chunk in batch],
+                metadatas=[chunk["metadata"] for chunk in batch],
+            )
         if progress:
             progress(embedding_count=embedding_count)
 
     INDEX_COLLECTIONS[request.index_id] = collection_name
-    return RagIndexResponse(
+    response = RagIndexResponse(
         index_id=request.index_id,
         textbook_count=len(request.textbooks),
         chapter_count=sum(len(textbook.chapters) for textbook in request.textbooks),
@@ -223,6 +244,8 @@ def index_textbooks(request: RagIndexRequest, progress: Optional[Callable[..., N
         vector_store_type="chroma",
         chunking_strategy=CHUNKING_STRATEGY,
     )
+    save_index_manifest(request.index_id, collection_name, fingerprint, response)
+    return response
 
 
 def build_chunks(
@@ -234,6 +257,8 @@ def build_chunks(
     chunks: list[dict[str, object]] = []
     for textbook in textbooks:
         for chapter in textbook.chapters:
+            if should_skip_chapter_for_rag(chapter):
+                continue
             content = normalize_content(chapter.content)
             if not content:
                 continue
@@ -301,6 +326,8 @@ def estimate_chunk_count(textbooks: list[RagTextbookInput], chunk_size: int, chu
     count = 0
     for textbook in textbooks:
         for chapter in textbook.chapters:
+            if should_skip_chapter_for_rag(chapter):
+                continue
             text_len = len(normalize_content(chapter.content))
             if text_len <= 0:
                 continue
@@ -361,7 +388,7 @@ def retrieve_matches(
     query_embedding: list[float],
     top_k: int,
 ) -> list[dict[str, object]]:
-    candidate_limit = max(top_k * 4, 20)
+    candidate_limit = max(top_k * 2, 10)
 
     if request.retrieval_mode in {"hybrid", "vector"}:
         results = collection.query(
@@ -523,6 +550,95 @@ def citation_label(metadata: dict[str, object]) -> str:
     return f"[{metadata.get('textbook_title', '')}, {metadata.get('chapter_title', '')}, {page}]"
 
 
+def request_fingerprint(
+    textbooks: list[RagTextbookInput],
+    chunk_size: int,
+    chunk_overlap: int,
+    embedding_model: str,
+) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(f"{chunk_size}:{chunk_overlap}:{embedding_model}:{CHUNKING_STRATEGY}".encode("utf-8"))
+    for textbook in sorted(textbooks, key=lambda item: item.textbook_id):
+        hasher.update(
+            json.dumps(
+                {
+                    "textbook_id": textbook.textbook_id,
+                    "filename": textbook.filename,
+                    "title": textbook.title,
+                    "total_chars": textbook.total_chars,
+                    "chapter_count": len(textbook.chapters),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        for chapter in textbook.chapters:
+            content = normalize_content(chapter.content)
+            hasher.update(
+                json.dumps(
+                    {
+                        "chapter_id": chapter.chapter_id,
+                        "title": chapter.title,
+                        "page_start": chapter.page_start,
+                        "page_end": chapter.page_end,
+                        "char_count": chapter.char_count,
+                        "content_sha": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            )
+    return hasher.hexdigest()
+
+
+def get_cached_index_response(
+    index_id: str,
+    collection_name: str,
+    fingerprint: str,
+) -> Optional[RagIndexResponse]:
+    manifest = load_index_manifest().get(index_id)
+    if not isinstance(manifest, dict) or manifest.get("fingerprint") != fingerprint:
+        return None
+    if manifest.get("collection_name") != collection_name:
+        return None
+
+    collection = get_existing_collection(collection_name)
+    if collection is None or collection.count() == 0:
+        return None
+
+    response_data = manifest.get("response")
+    if not isinstance(response_data, dict):
+        return None
+    response_data = {**response_data, "embedding_count": collection.count(), "vector_store_type": "chroma_cached"}
+    return RagIndexResponse(**response_data)
+
+
+def load_index_manifest() -> dict[str, object]:
+    if not RAG_MANIFEST_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(RAG_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_index_manifest(
+    index_id: str,
+    collection_name: str,
+    fingerprint: str,
+    response: RagIndexResponse,
+) -> None:
+    RAG_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    manifest = load_index_manifest()
+    manifest[index_id] = {
+        "fingerprint": fingerprint,
+        "collection_name": collection_name,
+        "response": response.model_dump() if hasattr(response, "model_dump") else response.dict(),
+    }
+    RAG_MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def recreate_collection(name: str):
     client = get_chroma_client()
     try:
@@ -530,6 +646,13 @@ def recreate_collection(name: str):
     except Exception:
         pass
     return client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
+
+
+def get_existing_collection(name: str):
+    try:
+        return get_chroma_client().get_collection(name=name)
+    except Exception:
+        return None
 
 
 def get_chroma_client():
@@ -569,6 +692,18 @@ def is_low_signal_metadata(metadata: dict[str, object], document: str) -> bool:
         return True
     page_start = optional_int(metadata.get("page_start")) or 0
     return page_start <= 15 and len(document.strip()) < 320
+
+
+def should_skip_chapter_for_rag(chapter: RagChapterInput) -> bool:
+    title = (chapter.title or "").strip()
+    content = normalize_content(chapter.content)
+    if not title and not content:
+        return True
+    if LOW_SIGNAL_CHAPTER_RE.search(title):
+        return True
+    if len(content) < 120 and LOW_SIGNAL_CHAPTER_RE.search(content[:80]):
+        return True
+    return False
 
 
 def term_counter(text: str) -> Counter[str]:

@@ -10,7 +10,8 @@
 - PDF 使用 PyMuPDF 逐页解析，包含基础章节识别、页眉页脚过滤和文本块提取
 - 支持选择单本教材生成知识图谱 JSON，节点包含 `id/name/definition/category/chapter/page`
 - 支持 `contains`、`prerequisite`、`parallel`、`applies_to` 关系，并以一级章节优先、点击展开二级知识点的方式可视化
-- RAG Pipeline：650 字滑窗分块、80 字重叠、OpenRouter 中文 embedding、Chroma 持久向量库、top5 向量检索、带教材/章节/页码引用的 LLM 回答
+- RAG Pipeline：800 字滑窗分块、80 字重叠、OpenRouter 中文 embedding、Chroma 持久向量库、top5 向量检索、带教材/章节/页码引用的 LLM 回答
+- 支持基于真实教材自动生成 24 道 RAG 评测题，并对多组配置输出回答准确率、引用准确率、平均响应时间和 Token 消耗
 
 ## 环境依赖
 
@@ -36,11 +37,20 @@ export EMBEDDING_PROVIDER="openrouter"
 export OPENROUTER_API_KEY="你的 OpenRouter API Key"
 export OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
 export OPENROUTER_EMBEDDING_MODEL="qwen/qwen3-embedding-8b"
+export OPENROUTER_CHAT_MODEL="google/gemini-3.1-flash-lite"
 ```
 
 不要把真实 API Key 提交到 GitHub。项目提供了 `.env.example` 作为配置模板。
 
 ## 启动
+
+Docker 一键启动：
+
+```bash
+docker-compose up -d
+```
+
+打开 `http://localhost:5173` 使用系统；后端 API 暴露在 `http://localhost:8000`。`docker-compose.yml` 会通过 `env_file: .env` 读取本地模型 API Key。
 
 后端：
 
@@ -143,3 +153,34 @@ npm run dev
   ]
 }
 ```
+
+### `POST /api/rag-eval/generate`
+
+自动生成 RAG 评测集，输出：
+
+- 问题文本
+- 题型与难度
+- 预期答案
+- 预期引用来源
+
+支持把结果持久化到 `artifacts/rag_eval_dataset.json`。
+
+### `POST /api/rag-eval/run`
+
+对指定评测集执行自动评测，输出：
+
+- `answer_accuracy`
+- `citation_accuracy`
+- `citation_recall`
+- `exact_citation_hit_rate`
+- `avg_response_time_ms`
+- `token_usage`
+
+### `POST /api/rag-eval/optimize`
+
+批量对比多组 RAG 配置并返回推荐配置。
+
+## RAG 评测产物
+
+- 评测集：`artifacts/rag_eval_dataset.json`
+- 说明文档：[docs/功能6-RAG评测.md](</Users/cathyzeng/Documents/New project 3/docs/功能6-RAG评测.md>)

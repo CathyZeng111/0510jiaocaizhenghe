@@ -1,13 +1,22 @@
 from pathlib import Path
 from typing import Optional
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import app_state
-from .graph_integration import apply_teacher_feedback, integrate_textbook_graphs
-from .integration_schemas import GraphIntegrationResult, TextbookKnowledgeGraph, TeacherFeedbackResult
+from .graph_integration import apply_teacher_feedback, integrate_textbook_graphs, respond_to_teacher_message
+from .integration_schemas import (
+    GraphIntegrationResult,
+    IntegrationChatMessage,
+    IntegrationChatRequest,
+    IntegrationChatResponse,
+    TextbookKnowledgeGraph,
+    TeacherFeedbackResult,
+)
 from .knowledge_graph import build_all_graphs
 from .modelscope_client import is_modelscope_configured
 from .parsers import SUPPORTED_EXTENSIONS, parse_file_path, parse_upload
@@ -20,8 +29,8 @@ app = FastAPI(title="AI Textbook Integrator", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origin_regex=r"https?://.*",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -94,6 +103,7 @@ def load_local_textbooks() -> UploadResponse:
     textbook_store.clear()
     app_state.graph_cache.clear()
     app_state.latest_integration = None
+    app_state.integration_chat_history.clear()
 
     results: list[UploadResult] = []
     for index, path in enumerate(files, start=1):
@@ -160,6 +170,7 @@ def build_integration(request: IntegrationBuildRequest) -> GraphIntegrationResul
         raise HTTPException(status_code=400, detail="至少需要 2 本教材图谱才能进行跨教材整合")
 
     app_state.latest_integration = integrate_textbook_graphs(graphs)
+    app_state.integration_chat_history.clear()
     return app_state.latest_integration
 
 
@@ -170,3 +181,42 @@ def apply_integration_feedback(request: FeedbackRequest) -> TeacherFeedbackResul
     feedback_result = apply_teacher_feedback(app_state.latest_integration, request.feedback)
     app_state.latest_integration = feedback_result.result
     return feedback_result
+
+
+@app.post("/api/integration/chat", response_model=IntegrationChatResponse)
+def integration_chat(request: IntegrationChatRequest) -> IntegrationChatResponse:
+    if app_state.latest_integration is None:
+        raise HTTPException(status_code=400, detail="请先执行跨教材整合")
+
+    session_id = request.session_id.strip() or "default"
+    history = app_state.integration_chat_history.setdefault(session_id, [])
+    history.append(make_chat_message("teacher", request.message))
+
+    feedback_result, reply = respond_to_teacher_message(app_state.latest_integration, request.message)
+    app_state.latest_integration = feedback_result.result
+
+    history.append(make_chat_message("system", reply))
+    app_state.integration_chat_history[session_id] = history[-80:]
+
+    return IntegrationChatResponse(
+        session_id=session_id,
+        reply=reply,
+        history=app_state.integration_chat_history[session_id],
+        result=app_state.latest_integration,
+        changes=feedback_result.changes,
+        unapplied=feedback_result.unapplied,
+    )
+
+
+def make_chat_message(role: str, content: str) -> IntegrationChatMessage:
+    return IntegrationChatMessage(
+        message_id=f"msg_{datetime.now(timezone.utc).timestamp():.6f}_{role}",
+        role=role,
+        content=content.strip(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+frontend_dist = Path.cwd() / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")

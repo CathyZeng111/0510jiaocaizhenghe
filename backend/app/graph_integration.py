@@ -13,6 +13,7 @@ from .integration_schemas import (
     GraphIntegrationResult,
     IntegratedKnowledgeGraph,
     IntegrationDecision,
+    KnowledgeConflict,
     KnowledgeEdge,
     KnowledgeNode,
     SimilarityBreakdown,
@@ -56,6 +57,7 @@ def integrate_textbook_graphs(
     removed_refs = [ref for ref in refs if should_remove_node(ref.node)]
     valid_refs = [ref for ref in refs if ref not in removed_refs]
     embedding_map = build_embedding_map(valid_refs)
+    conflicts = detect_definition_conflicts(valid_refs)
     groups = build_merge_groups(valid_refs, merge_threshold, embedding_map)
 
     decisions: list[IntegrationDecision] = []
@@ -137,10 +139,12 @@ def integrate_textbook_graphs(
         edges=merged_edges,
     )
     enforce_char_budget(merged_graph, decisions, refs)
+    attach_conflicts_to_merged_nodes(merged_graph, node_id_map, conflicts)
     return GraphIntegrationResult(
         decisions=decisions,
         merged_graph=merged_graph,
         stats=build_stats(graphs, merged_graph, decisions),
+        conflicts=conflicts,
     )
 
 
@@ -173,6 +177,130 @@ def apply_teacher_feedback(
 
     refresh_stats_after_feedback(result)
     return TeacherFeedbackResult(result=result, changes=changes, unapplied=unapplied)
+
+
+def respond_to_teacher_message(
+    integration_result: GraphIntegrationResult,
+    message: str,
+) -> tuple[TeacherFeedbackResult, str]:
+    """Answer explanation questions or apply teacher feedback to the integrated graph."""
+    cleaned = (message or "").strip()
+    if not cleaned:
+        return TeacherFeedbackResult(result=copy.deepcopy(integration_result)), "请输入需要解释或调整的整合建议。"
+
+    if is_explanation_request(cleaned):
+        return TeacherFeedbackResult(result=copy.deepcopy(integration_result)), explain_integration_decision(
+            integration_result,
+            cleaned,
+        )
+
+    feedback_result = apply_teacher_feedback(integration_result, cleaned)
+    if feedback_result.changes:
+        return feedback_result, summarize_feedback_changes(feedback_result)
+
+    fallback = explain_integration_decision(integration_result, cleaned)
+    if fallback.startswith("没有找到"):
+        return feedback_result, "我没有匹配到可调整的知识点。请尽量使用知识点原名，例如：请保留“免疫应答”，或把“抗原”和“免疫原”拆开。"
+    return feedback_result, fallback
+
+
+def is_explanation_request(message: str) -> bool:
+    return bool(re.search(r"为什么|为何|原因|解释|怎么判定|依据|凭什么", message))
+
+
+def summarize_feedback_changes(feedback_result: TeacherFeedbackResult) -> str:
+    action_labels = {
+        "keep": "保留",
+        "remove": "删除",
+        "split": "拆分",
+        "merge": "合并",
+        "unknown": "未识别",
+    }
+    parts = [
+        f"{action_labels.get(change.action, change.action)}：{change.note}（{len(change.affected_node_ids)} 个节点）"
+        for change in feedback_result.changes
+    ]
+    reply = "已根据教师反馈更新整合结果：" + "；".join(parts)
+    if feedback_result.unapplied:
+        reply += f"。未处理：{'；'.join(feedback_result.unapplied)}"
+    return reply
+
+
+def explain_integration_decision(result: GraphIntegrationResult, question: str) -> str:
+    matches = rank_matching_decisions(result, question)
+    if not matches:
+        return "没有找到与这条问题直接相关的整合决策。可以引用知识点名称来追问，例如：为什么合并“炎症”和“炎症反应”？"
+
+    lines: list[str] = []
+    for decision in matches[:3]:
+        action_label = {"merge": "合并", "keep": "保留", "remove": "删除"}.get(decision.action, decision.action)
+        source_names = source_names_for_decision(result, decision)
+        node_hint = f"；涉及节点：{'、'.join(source_names[:6])}" if source_names else ""
+        similarity_hint = ""
+        if decision.similarity:
+            similarity_hint = (
+                f"；相似度：embedding {decision.similarity.embedding_similarity:.2f}，"
+                f"综合 {decision.similarity.final_score:.2f}"
+            )
+        lines.append(
+            f"{decision.canonical_name} 的决策是“{action_label}”。理由：{decision.reason}"
+            f"{node_hint}{similarity_hint}；置信度 {decision.confidence:.2f}。"
+        )
+    return "\n".join(lines)
+
+
+def rank_matching_decisions(result: GraphIntegrationResult, question: str) -> list[IntegrationDecision]:
+    targets = extract_quoted_or_named_targets(question)
+    normalized_targets = [normalize_name(target) for target in targets if normalize_name(target)]
+    wanted_actions: set[str] = set()
+    if re.search(r"合并|归并|并入", question):
+        wanted_actions.add("merge")
+    if re.search(r"删除|移除|去掉", question):
+        wanted_actions.add("remove")
+    if re.search(r"保留|单独|不应该", question):
+        wanted_actions.add("keep")
+
+    scored: list[tuple[int, IntegrationDecision]] = []
+    for decision in result.decisions:
+        score = 0
+        decision_text = normalize_name(
+            " ".join(
+                [
+                    decision.canonical_name,
+                    decision.reason,
+                    decision.result_node or "",
+                    " ".join(decision.affected_nodes),
+                    " ".join(decision.node_ids),
+                    " ".join(source_names_for_decision(result, decision)),
+                ]
+            )
+        )
+        if wanted_actions and decision.action in wanted_actions:
+            score += 2
+        for target in normalized_targets:
+            if target and (target in decision_text or decision_text in target):
+                score += 4
+        if not normalized_targets and score:
+            score += 1
+        if score:
+            scored.append((score, decision))
+
+    scored.sort(key=lambda item: (item[0], item[1].confidence, item[1].score), reverse=True)
+    return [decision for _, decision in scored]
+
+
+def source_names_for_decision(result: GraphIntegrationResult, decision: IntegrationDecision) -> list[str]:
+    names: list[str] = []
+    result_ids = {decision.result_node, *decision.node_ids, *decision.affected_nodes}
+    for node in result.merged_graph.nodes:
+        node_source_ids = {
+            f"{source.get('textbook_id')}:{source.get('node_id')}"
+            for source in node.metadata.get("sources", [])
+            if isinstance(source, dict) and source.get("textbook_id") and source.get("node_id")
+        }
+        if node.node_id in result_ids or node_source_ids & result_ids:
+            names.extend([node.name, *node.aliases])
+    return unique_sorted([name for name in names if name])
 
 
 def normalize_name(value: str) -> str:
@@ -237,6 +365,113 @@ def compare_nodes(
         embedding_similarity=round(embedding_score, 4),
         final_score=round(final_score, 4),
     )
+
+
+def detect_definition_conflicts(refs: list[NodeRef]) -> list[KnowledgeConflict]:
+    """Find same-name concepts whose definitions diverge across textbooks."""
+    grouped: dict[str, list[NodeRef]] = defaultdict(list)
+    for ref in refs:
+        normalized = normalize_name(ref.node.name)
+        if len(normalized) < 2 or EMPTY_NAME_RE.match(normalized):
+            continue
+        if is_generic_conflict_name(ref.node.name, normalized):
+            continue
+        if len(ref.node.definition or "") < 20:
+            continue
+        grouped[normalized].append(ref)
+
+    conflicts: list[KnowledgeConflict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for normalized_name, group in grouped.items():
+        if len(group) < 2:
+            continue
+        for left_index, left in enumerate(group):
+            for right in group[left_index + 1 :]:
+                if left.graph.textbook_id == right.graph.textbook_id:
+                    continue
+                left_id = qualified_node_id(left.graph, left.node)
+                right_id = qualified_node_id(right.graph, right.node)
+                pair_key = tuple(sorted([left_id, right_id]))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+
+                similarity = compare_nodes(left.node, right.node)
+                if similarity.token_jaccard <= 0.6 or similarity.definition_jaccard >= 0.3:
+                    continue
+
+                conflicts.append(
+                    KnowledgeConflict(
+                        conflict_id=f"conflict_{len(conflicts) + 1:03d}",
+                        normalized_name=normalized_name,
+                        node_ids=[left_id, right_id],
+                        node_names=unique_sorted([left.node.name, right.node.name]),
+                        textbook_titles=unique_sorted([left.graph.textbook_title, right.graph.textbook_title]),
+                        token_jaccard=similarity.token_jaccard,
+                        definition_jaccard=similarity.definition_jaccard,
+                        reason=(
+                            "知识点名称高度一致，但两本教材给出的定义文本重合度较低，"
+                            "建议教师检查是否存在口径、范围或教学侧重点冲突。"
+                        ),
+                        definitions=[
+                            conflict_definition_source(left),
+                            conflict_definition_source(right),
+                        ],
+                    )
+                )
+    return conflicts
+
+
+def is_generic_conflict_name(name: str, normalized: str) -> bool:
+    if re.fullmatch(r"第[一二三四五六七八九十百千万零〇两\d]+[章节篇编部讲]", normalized):
+        return True
+    if re.fullmatch(r"第[一二三四五六七八九十百千万零〇两\d]+节概述", normalized):
+        return True
+    if any(marker in normalized for marker in ("概述", "临床病例分析", "本章小结", "学习目标", "复习题")):
+        return True
+    clean = normalize_name(name)
+    return clean in {"正文", "目录", "前言", "绪论", "附录"}
+
+
+def conflict_definition_source(ref: NodeRef):
+    return {
+        "node_id": qualified_node_id(ref.graph, ref.node),
+        "node_name": ref.node.name,
+        "textbook_id": ref.graph.textbook_id,
+        "textbook_title": ref.graph.textbook_title,
+        "definition": trim_conflict_definition(ref.node.definition),
+    }
+
+
+def trim_conflict_definition(definition: Optional[str]) -> Optional[str]:
+    if not definition:
+        return definition
+    cleaned = collapse_space(definition)
+    return cleaned if len(cleaned) <= 260 else cleaned[:260].rstrip() + "..."
+
+
+def collapse_space(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def attach_conflicts_to_merged_nodes(
+    merged_graph: IntegratedKnowledgeGraph,
+    node_id_map: dict[str, str],
+    conflicts: list[KnowledgeConflict],
+) -> None:
+    node_by_id = {node.node_id: node for node in merged_graph.nodes}
+    for conflict in conflicts:
+        target_ids = {node_id_map.get(node_id) for node_id in conflict.node_ids}
+        for target_id in target_ids:
+            if not target_id or target_id not in node_by_id:
+                continue
+            node = node_by_id[target_id]
+            existing = node.metadata.get("conflicts")
+            conflict_payload = conflict.model_dump() if hasattr(conflict, "model_dump") else conflict.dict()
+            if isinstance(existing, list):
+                existing.append(conflict_payload)
+            else:
+                node.metadata["conflicts"] = [conflict_payload]
 
 
 def build_embedding_map(refs: list[NodeRef]) -> dict[str, list[float]]:
@@ -604,10 +839,14 @@ def apply_remove_feedback(result: GraphIntegrationResult, sentence: str) -> Opti
         result.decisions.append(
             IntegrationDecision(
                 decision_id=next_feedback_decision_id(result),
+                action="remove",
+                affected_nodes=[node.node_id],
+                result_node=None,
                 decision="remove",
                 node_ids=[node.node_id],
                 canonical_name=node.name,
                 score=1.0,
+                confidence=1.0,
                 reason=f"教师反馈删除：{sentence}",
             )
         )
@@ -629,10 +868,14 @@ def apply_keep_feedback(result: GraphIntegrationResult, sentence: str) -> Option
         result.decisions.append(
             IntegrationDecision(
                 decision_id=next_feedback_decision_id(result),
+                action="keep",
+                affected_nodes=[node.node_id],
+                result_node=node.node_id,
                 decision="keep",
                 node_ids=[node.node_id],
                 canonical_name=node.name,
                 score=1.0,
+                confidence=1.0,
                 reason=f"教师反馈保留：{sentence}",
             )
         )
@@ -677,10 +920,14 @@ def apply_split_feedback(result: GraphIntegrationResult, sentence: str) -> Optio
         result.decisions.append(
             IntegrationDecision(
                 decision_id=next_feedback_decision_id(result),
+                action="keep",
+                affected_nodes=[node.node_id, *created_ids],
+                result_node=None,
                 decision="keep",
                 node_ids=created_ids,
                 canonical_name=" / ".join(parts),
                 score=1.0,
+                confidence=1.0,
                 reason=f"教师反馈拆分：{sentence}",
             )
         )
@@ -722,10 +969,14 @@ def apply_merge_feedback(result: GraphIntegrationResult, sentence: str) -> Optio
     result.decisions.append(
         IntegrationDecision(
             decision_id=next_feedback_decision_id(result),
+            action="merge",
+            affected_nodes=[node.node_id for node in matches],
+            result_node=merged_id,
             decision="merge",
             node_ids=[node.node_id for node in matches],
             canonical_name=base.name,
             score=1.0,
+            confidence=1.0,
             reason=f"教师反馈合并：{sentence}",
         )
     )
@@ -778,8 +1029,16 @@ def extract_quoted_or_named_targets(sentence: str) -> list[str]:
     if quoted:
         return [target.strip() for target in quoted if target.strip()]
 
-    cleaned = re.sub(r"请|把|将|节点|概念|知识点|保留|删除|移除|去掉|拆分|拆开|拆成|分成|分为|合并|并入|归并|不要|单独", " ", sentence)
-    candidates = [part.strip() for part in SPLIT_SEPARATORS_RE.split(cleaned) if part.strip()]
+    cleaned = re.sub(
+        r"为什么|为何|原因|解释|依据|觉得|认为|应该|不应该|它们|他们|不是|同一个|这个|那个|请|把|将|节点|概念|知识点|保留|删除|移除|去掉|拆分|拆开|拆成|分成|分为|合并|并入|归并|不要|单独|了|吗|呢",
+        " ",
+        sentence,
+    )
+    candidates = [
+        part.strip(" ：:，,。？！?；;")
+        for part in SPLIT_SEPARATORS_RE.split(cleaned)
+        if part.strip(" ：:，,。？！?；;")
+    ]
     return [candidate for candidate in candidates if 1 <= len(candidate) <= 40]
 
 

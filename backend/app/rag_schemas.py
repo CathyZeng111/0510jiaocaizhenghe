@@ -34,14 +34,14 @@ class RagChunkMetadata(BaseModel):
     char_end: int
     retrieval_model: str = "keyword_char_ngram_v1"
     embedding_model: Optional[str] = None
-    chunk_size: int = 650
+    chunk_size: int = 800
     chunk_overlap: int = 80
 
 
 class RagIndexRequest(BaseModel):
     textbooks: list[RagTextbookInput]
     index_id: str = "default"
-    chunk_size: int = Field(default=650, ge=500, le=800)
+    chunk_size: int = Field(default=800, ge=500, le=800)
     chunk_overlap: int = Field(default=80, ge=50, le=100)
     embedding_model: Optional[str] = None
 
@@ -56,7 +56,7 @@ class RagIndexResponse(BaseModel):
     embedding_model: Optional[str] = None
     embedding_count: int = 0
     vector_store_type: str = "none"
-    chunking_strategy: str = "sliding_window_500_800_overlap_50_100"
+    chunking_strategy: str = "sliding_window_800_overlap_80"
 
 
 class RagIndexJobStartResponse(BaseModel):
@@ -119,7 +119,7 @@ class RagRetrievalInfo(BaseModel):
     embedding_model: Optional[str] = None
     embedding_count: int = 0
     vector_store_type: str = "none"
-    chunking_strategy: str = "sliding_window_500_800_overlap_50_100"
+    chunking_strategy: str = "sliding_window_800_overlap_80"
     top_k: int
     min_score: float
     matched_chunks: int

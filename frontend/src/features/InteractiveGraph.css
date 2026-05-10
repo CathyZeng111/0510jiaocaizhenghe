@@ -70,10 +70,22 @@
   display: flex;
   min-height: 26px;
   flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
+  gap: 8px 14px;
+  align-items: flex-start;
   color: #59677d;
   font-size: 13px;
+}
+
+.interactive-graph__legend-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 9px;
+}
+
+.interactive-graph__legend-group strong {
+  color: #26344b;
+  font-size: 12px;
 }
 
 .interactive-graph__legend span {
@@ -83,11 +95,37 @@
   gap: 6px;
 }
 
-.interactive-graph__legend i {
+.interactive-graph__legend-color {
   width: 10px;
   height: 10px;
   flex: 0 0 auto;
   border-radius: 50%;
+}
+
+.interactive-graph__legend-shape {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: #68778f;
+  stroke: #ffffff;
+  stroke-width: 1.8px;
+}
+
+.interactive-graph__legend-size {
+  display: inline-block;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #68778f;
+}
+
+.interactive-graph__legend-size.small {
+  width: 8px;
+  height: 8px;
+}
+
+.interactive-graph__legend-size.large {
+  width: 16px;
+  height: 16px;
 }
 
 .interactive-graph__body {
@@ -164,12 +202,11 @@
   fill: transparent;
 }
 
-.interactive-graph__node-circle {
+.interactive-graph__node-shape {
   stroke: #ffffff;
   stroke-width: 3px;
   filter: drop-shadow(0 7px 14px rgba(18, 30, 48, 0.2));
   transition:
-    r 140ms ease,
     stroke 140ms ease,
     stroke-width 140ms ease,
     opacity 140ms ease;
@@ -187,12 +224,12 @@
   text-anchor: middle;
 }
 
-.interactive-graph__node.is-selected .interactive-graph__node-circle {
+.interactive-graph__node.is-selected .interactive-graph__node-shape {
   stroke: #172033;
   stroke-width: 4px;
 }
 
-.interactive-graph__node.is-matched .interactive-graph__node-circle {
+.interactive-graph__node.is-matched .interactive-graph__node-shape {
   stroke: #f6c542;
   stroke-width: 5px;
 }
@@ -201,7 +238,7 @@
   opacity: 0.24;
 }
 
-.interactive-graph__node:focus-visible .interactive-graph__node-circle {
+.interactive-graph__node:focus-visible .interactive-graph__node-shape {
   stroke: #0b5cad;
   stroke-width: 5px;
 }
@@ -277,6 +314,45 @@
   color: #2a3850;
   font-size: 14px;
   line-height: 1.65;
+}
+
+.interactive-graph__conflicts {
+  display: grid;
+  gap: 9px;
+  border: 1px solid #f0b4b4;
+  border-radius: 8px;
+  background: #fff5f5;
+  color: #842727;
+  padding: 12px;
+}
+
+.interactive-graph__conflicts > strong {
+  color: #781f1f;
+  font-size: 14px;
+}
+
+.interactive-graph__conflicts article {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid #f4cccc;
+  padding-top: 8px;
+}
+
+.interactive-graph__conflicts article:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.interactive-graph__conflicts p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.interactive-graph__conflicts small {
+  color: #9a4141;
+  line-height: 1.45;
 }
 
 .interactive-graph__excerpt {

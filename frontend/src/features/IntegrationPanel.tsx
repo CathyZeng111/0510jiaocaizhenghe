@@ -1,8 +1,13 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { GitMerge, MessageSquare, RefreshCw } from "lucide-react";
+import { GitMerge, MessageSquare, RefreshCw, Send } from "lucide-react";
 import { InteractiveGraph } from "./InteractiveGraph";
 import { toInteractiveGraph } from "./KnowledgeGraphPanel";
-import type { GraphIntegrationResult, TeacherFeedbackResult, TextbookKnowledgeGraph } from "./integrationTypes";
+import type {
+  GraphIntegrationResult,
+  IntegrationChatMessage,
+  IntegrationChatResponse,
+  TextbookKnowledgeGraph,
+} from "./integrationTypes";
 import type { Textbook } from "./ragTypes";
 
 type Props = {
@@ -14,9 +19,11 @@ type Props = {
 export function IntegrationPanel({ graphs, textbooks, apiBase }: Props) {
   const [result, setResult] = useState<GraphIntegrationResult | null>(null);
   const [sourceGraphs, setSourceGraphs] = useState<TextbookKnowledgeGraph[]>(graphs);
-  const [feedback, setFeedback] = useState("");
+  const [chatInput, setChatInput] = useState("");
+  const [chatHistory, setChatHistory] = useState<IntegrationChatMessage[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const sessionId = "integration-default";
 
   useEffect(() => {
     if (graphs.length) setSourceGraphs(graphs);
@@ -48,6 +55,7 @@ export function IntegrationPanel({ graphs, textbooks, apiBase }: Props) {
       });
       if (!response.ok) throw new Error(`整合失败：HTTP ${response.status}`);
       setResult((await response.json()) as GraphIntegrationResult);
+      setChatHistory([]);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "整合失败");
     } finally {
@@ -55,24 +63,26 @@ export function IntegrationPanel({ graphs, textbooks, apiBase }: Props) {
     }
   }
 
-  async function submitFeedback(event: FormEvent<HTMLFormElement>) {
+  async function submitChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!feedback.trim()) return;
+    if (!chatInput.trim() || !result) return;
+    const nextMessage = chatInput.trim();
     setLoading(true);
     setMessage(null);
     try {
-      const response = await fetch(`${apiBase}/api/integration/feedback`, {
+      const response = await fetch(`${apiBase}/api/integration/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feedback: feedback.trim() }),
+        body: JSON.stringify({ session_id: sessionId, message: nextMessage }),
       });
-      if (!response.ok) throw new Error(`反馈应用失败：HTTP ${response.status}`);
-      const data = (await response.json()) as TeacherFeedbackResult;
+      if (!response.ok) throw new Error(`对话处理失败：HTTP ${response.status}`);
+      const data = (await response.json()) as IntegrationChatResponse;
       setResult(data.result);
-      setMessage(data.changes.length ? `已应用 ${data.changes.length} 条反馈` : "未匹配到可修改的节点");
-      setFeedback("");
+      setChatHistory(data.history);
+      setMessage(data.changes.length ? `已更新 ${data.changes.length} 项整合结果` : null);
+      setChatInput("");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "反馈应用失败");
+      setMessage(error instanceof Error ? error.message : "对话处理失败");
     } finally {
       setLoading(false);
     }
@@ -108,6 +118,7 @@ export function IntegrationPanel({ graphs, textbooks, apiBase }: Props) {
         <span>{Math.max(sourceGraphs.length, textbooks.length)} 个图谱</span>
         <span>{result?.stats.source_node_count ?? 0} 原节点</span>
         <span>{result?.stats.merged_node_count ?? 0} 整合后</span>
+        <span>{result?.conflicts?.length ?? 0} 个定义冲突</span>
         <span>{formatNumber(stats?.source_char_count ?? 0)} → {formatNumber(stats?.merged_char_count ?? 0)} 字</span>
         <span className={stats?.budget_met ? "metric-good" : "metric-bad"}>
           字数压缩 {formatPercent(stats?.char_compression_ratio ?? 0)}
@@ -137,18 +148,37 @@ export function IntegrationPanel({ graphs, textbooks, apiBase }: Props) {
             </div>
           </div>
           <div className="decision-panel">
-            <form onSubmit={submitFeedback} className="feedback-form">
-              <label>教师反馈</label>
-              <textarea
-                value={feedback}
-                onChange={(event) => setFeedback(event.target.value)}
-                placeholder="例如：请保留“免疫应答”；把“抗原”和“免疫原”拆开"
-              />
-              <button type="submit" disabled={loading || !feedback.trim()}>
+            <div className="chat-panel">
+              <div className="chat-title">
                 <MessageSquare size={16} />
-                应用反馈
-              </button>
-            </form>
+                <strong>整合建议对话</strong>
+              </div>
+              <div className="chat-history">
+                {chatHistory.length ? (
+                  chatHistory.map((item) => (
+                    <article key={item.message_id} className={`chat-message ${item.role}`}>
+                      <span>{item.role === "teacher" ? "教师" : "系统"}</span>
+                      <p>{item.content}</p>
+                    </article>
+                  ))
+                ) : (
+                  <div className="chat-empty">
+                    可以追问原因，也可以直接修改方案，例如“为什么把炎症和炎症反应合并了？”或“把抗原和免疫原拆开”。
+                  </div>
+                )}
+              </div>
+              <form onSubmit={submitChat} className="chat-form">
+                <textarea
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  placeholder="输入整合追问或修改意见"
+                />
+                <button type="submit" disabled={loading || !chatInput.trim()}>
+                  <Send size={16} />
+                  发送
+                </button>
+              </form>
+            </div>
             <h3>整合决策</h3>
             <div className="decision-list">
               {result.decisions.slice(0, 80).map((decision) => (

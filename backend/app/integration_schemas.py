@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 DecisionType = Literal["merge", "keep", "remove"]
 FeedbackAction = Literal["keep", "remove", "split", "merge", "unknown"]
+ChatRole = Literal["teacher", "system"]
 
 
 class KnowledgeNode(BaseModel):
@@ -61,6 +62,26 @@ class IntegrationDecision(BaseModel):
     similarity: Optional[SimilarityBreakdown] = None
 
 
+class ConflictDefinitionSource(BaseModel):
+    node_id: str
+    node_name: str
+    textbook_id: str
+    textbook_title: str
+    definition: Optional[str] = None
+
+
+class KnowledgeConflict(BaseModel):
+    conflict_id: str
+    normalized_name: str
+    node_ids: list[str] = Field(default_factory=list)
+    node_names: list[str] = Field(default_factory=list)
+    textbook_titles: list[str] = Field(default_factory=list)
+    token_jaccard: float
+    definition_jaccard: float
+    reason: str
+    definitions: list[ConflictDefinitionSource] = Field(default_factory=list)
+
+
 class CompressionStats(BaseModel):
     source_graph_count: int
     source_node_count: int
@@ -89,6 +110,7 @@ class GraphIntegrationResult(BaseModel):
     decisions: list[IntegrationDecision] = Field(default_factory=list)
     merged_graph: IntegratedKnowledgeGraph
     stats: CompressionStats
+    conflicts: list[KnowledgeConflict] = Field(default_factory=list)
 
 
 class TeacherFeedbackChange(BaseModel):
@@ -99,6 +121,27 @@ class TeacherFeedbackChange(BaseModel):
 
 
 class TeacherFeedbackResult(BaseModel):
+    result: GraphIntegrationResult
+    changes: list[TeacherFeedbackChange] = Field(default_factory=list)
+    unapplied: list[str] = Field(default_factory=list)
+
+
+class IntegrationChatMessage(BaseModel):
+    message_id: str
+    role: ChatRole
+    content: str
+    created_at: str
+
+
+class IntegrationChatRequest(BaseModel):
+    message: str
+    session_id: str = "default"
+
+
+class IntegrationChatResponse(BaseModel):
+    session_id: str
+    reply: str
+    history: list[IntegrationChatMessage] = Field(default_factory=list)
     result: GraphIntegrationResult
     changes: list[TeacherFeedbackChange] = Field(default_factory=list)
     unapplied: list[str] = Field(default_factory=list)

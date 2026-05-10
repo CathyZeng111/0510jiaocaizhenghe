@@ -20,7 +20,7 @@ export type KnowledgeGraphNode = {
   keywords?: string[];
   x?: number;
   y?: number;
-  metadata?: Record<string, string | number | boolean | null | undefined>;
+  metadata?: Record<string, unknown>;
 };
 
 export type KnowledgeGraphEdge = {

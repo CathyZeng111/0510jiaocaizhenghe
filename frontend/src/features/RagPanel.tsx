@@ -60,7 +60,7 @@ export function RagPanel({ textbooks, indexId = "default", apiBase = DEFAULT_API
         body: JSON.stringify({
           index_id: indexId,
           textbooks,
-          chunk_size: 650,
+          chunk_size: 800,
           chunk_overlap: 80,
           embedding_model: DEFAULT_EMBEDDING_MODEL,
         }),
@@ -166,7 +166,7 @@ export function RagPanel({ textbooks, indexId = "default", apiBase = DEFAULT_API
         <Metric label="向量库" value={indexSummary?.vector_store_type ?? (isIndexing ? "Chroma 中" : "待索引")} />
       </div>
       <p style={styles.note}>
-        教材加载后会自动切片并写入 Chroma：每块 650 字，按句号/换行就近切分，保持 80 字重叠。
+        教材加载后会自动切片并写入 Chroma：每块 800 字，按句号/换行就近切分，保持 80 字重叠；同一批教材会复用已建索引。
       </p>
 
       <form onSubmit={askQuestion} style={styles.form}>

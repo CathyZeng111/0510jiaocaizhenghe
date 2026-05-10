@@ -179,6 +179,7 @@ export function toInteractiveGraph(graph: TextbookKnowledgeGraph): KnowledgeGrap
         page: node.metadata?.page_start as number | undefined,
         category: node.metadata?.category as string | undefined,
         level: node.metadata?.level as string | undefined,
+        conflicts: node.metadata?.conflicts,
       },
     })),
     edges: graph.edges.map((edge) => ({

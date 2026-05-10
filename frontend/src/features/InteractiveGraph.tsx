@@ -43,6 +43,12 @@ const WORLD_HEIGHT = 760;
 const MIN_SCALE = 0.45;
 const MAX_SCALE = 2.8;
 const SOURCE_COLORS = ["#2f7dd3", "#d95f43", "#1f8a70", "#7a5ccf", "#c78717", "#20889a", "#c44f7a", "#5c7f2c"];
+const SHAPE_LEGEND = [
+  { category: "核心概念", shape: "circle", label: "核心概念" },
+  { category: "内容块", shape: "square", label: "内容块" },
+  { category: "方法", shape: "diamond", label: "方法/机制" },
+  { category: "章节主题", shape: "hexagon", label: "章节主题" },
+] as const;
 
 export function InteractiveGraph({
   data,
@@ -278,16 +284,39 @@ export function InteractiveGraph({
         </div>
       </div>
 
-      {sourceMap.size > 0 ? (
-        <div className="interactive-graph__legend" aria-label="教材来源图例">
-          {Array.from(sourceMap.values()).map((source) => (
-            <span key={source.id}>
-              <i style={{ backgroundColor: source.color }} />
-              {source.title}
+      <div className="interactive-graph__legend" aria-label="图谱视觉编码图例">
+        <div className="interactive-graph__legend-group">
+          <strong>形状=类别</strong>
+          {SHAPE_LEGEND.map((item) => (
+            <span key={item.category}>
+              <ShapeLegendIcon shape={item.shape} />
+              {item.label}
             </span>
           ))}
         </div>
-      ) : null}
+        {sourceMap.size > 0 ? (
+          <div className="interactive-graph__legend-group">
+            <strong>颜色=来源</strong>
+            {Array.from(sourceMap.values()).map((source) => (
+              <span key={source.id}>
+                <i className="interactive-graph__legend-color" style={{ backgroundColor: source.color }} />
+                {source.title}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="interactive-graph__legend-group">
+          <strong>大小=频次</strong>
+          <span>
+            <i className="interactive-graph__legend-size small" />
+            少
+          </span>
+          <span>
+            <i className="interactive-graph__legend-size large" />
+            多
+          </span>
+        </div>
+      </div>
 
       <div className="interactive-graph__body">
         <div className="interactive-graph__canvas">
@@ -353,11 +382,7 @@ export function InteractiveGraph({
                         onPointerDown={(event) => startNodeDrag(event, node.id)}
                       >
                         <circle r={radius + 8} className="interactive-graph__node-hitarea" />
-                        <circle
-                          r={radius}
-                          className="interactive-graph__node-circle"
-                          style={{ fill: source?.color ?? "#68778f" }}
-                        />
+                        <NodeShape node={node} radius={radius} fill={source?.color ?? "#68778f"} />
                         <text y={radius + 18}>{node.label}</text>
                       </g>
                     );
@@ -386,6 +411,56 @@ export function InteractiveGraph({
       </div>
     </section>
   );
+}
+
+function NodeShape({ node, radius, fill }: { node: KnowledgeGraphNode; radius: number; fill: string }) {
+  const shape = getNodeShape(node);
+  const className = "interactive-graph__node-shape";
+  if (shape === "square") {
+    const side = radius * 1.7;
+    return <rect className={className} height={side} rx={3} style={{ fill }} width={side} x={-side / 2} y={-side / 2} />;
+  }
+  if (shape === "diamond") {
+    const points = [
+      `0,${-radius}`,
+      `${radius},0`,
+      `0,${radius}`,
+      `${-radius},0`,
+    ].join(" ");
+    return <polygon className={className} points={points} style={{ fill }} />;
+  }
+  if (shape === "hexagon") {
+    return <polygon className={className} points={hexagonPoints(radius)} style={{ fill }} />;
+  }
+  return <circle r={radius} className={className} style={{ fill }} />;
+}
+
+function ShapeLegendIcon({ shape }: { shape: (typeof SHAPE_LEGEND)[number]["shape"] }) {
+  return (
+    <svg aria-hidden="true" className="interactive-graph__legend-shape" viewBox="-12 -12 24 24">
+      {shape === "square" ? <rect x="-8" y="-8" width="16" height="16" rx="2" /> : null}
+      {shape === "diamond" ? <polygon points="0,-10 10,0 0,10 -10,0" /> : null}
+      {shape === "hexagon" ? <polygon points={hexagonPoints(10)} /> : null}
+      {shape === "circle" ? <circle r="8" /> : null}
+    </svg>
+  );
+}
+
+function getNodeShape(node: KnowledgeGraphNode) {
+  const category = String(node.metadata?.category ?? "");
+  const type = String(node.metadata?.type ?? "");
+  const level = String(node.metadata?.level ?? "");
+  if (category.includes("方法") || category.includes("机制") || category.includes("现象")) return "diamond";
+  if (category.includes("内容块") || type === "secondary") return "square";
+  if (level === "primary" || type === "primary" || category.includes("章节")) return "hexagon";
+  return "circle";
+}
+
+function hexagonPoints(radius: number) {
+  return Array.from({ length: 6 }, (_, index) => {
+    const angle = (Math.PI / 3) * index - Math.PI / 6;
+    return `${Math.cos(angle) * radius},${Math.sin(angle) * radius}`;
+  }).join(" ");
 }
 
 function GraphEdgeLine({
@@ -418,7 +493,10 @@ function GraphEdgeLine({
 }
 
 function NodeDetails({ node, source }: { node: KnowledgeGraphNode; source: (TextbookSource & { color: string }) | null }) {
-  const metadataEntries = Object.entries(node.metadata ?? {}).filter(([, value]) => value !== undefined && value !== null);
+  const conflicts = Array.isArray(node.metadata?.conflicts) ? node.metadata.conflicts : [];
+  const metadataEntries = Object.entries(node.metadata ?? {}).filter(
+    ([key, value]) => key !== "conflicts" && value !== undefined && value !== null,
+  );
 
   return (
     <>
@@ -451,6 +529,23 @@ function NodeDetails({ node, source }: { node: KnowledgeGraphNode; source: (Text
 
       {node.description ? <p className="interactive-graph__description">{node.description}</p> : null}
 
+      {conflicts.length ? (
+        <div className="interactive-graph__conflicts" aria-label="知识冲突检测">
+          <strong>⚠ 定义不一致</strong>
+          {conflicts.slice(0, 3).map((conflict, index) => (
+            <article key={readConflictString(conflict, "conflict_id") || index}>
+              <p>
+                {formatConflictText(conflict)}
+              </p>
+              <small>
+                定义重合度 {formatConflictScore(conflict, "definition_jaccard")} · 名称重合度{" "}
+                {formatConflictScore(conflict, "token_jaccard")}
+              </small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+
       {node.sourceExcerpt ? (
         <blockquote className="interactive-graph__excerpt">
           <strong>原文出处</strong>
@@ -470,6 +565,33 @@ function NodeDetails({ node, source }: { node: KnowledgeGraphNode; source: (Text
       ) : null}
     </>
   );
+}
+
+function formatConflictText(conflict: unknown) {
+  const titles = readConflictArray(conflict, "textbook_titles");
+  if (titles.length >= 2) {
+    return `${titles.slice(0, 2).join(" / ")} 定义不一致`;
+  }
+  const names = readConflictArray(conflict, "node_names");
+  return names.length ? `${names.join(" / ")} 定义不一致` : "不同教材对该知识点的定义不一致";
+}
+
+function readConflictArray(conflict: unknown, key: string) {
+  if (!conflict || typeof conflict !== "object") return [];
+  const value = (conflict as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+}
+
+function readConflictString(conflict: unknown, key: string) {
+  if (!conflict || typeof conflict !== "object") return "";
+  const value = (conflict as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+function formatConflictScore(conflict: unknown, key: string) {
+  if (!conflict || typeof conflict !== "object") return "-";
+  const value = (conflict as Record<string, unknown>)[key];
+  return typeof value === "number" ? value.toFixed(2) : "-";
 }
 
 function createInitialPositions(nodes: KnowledgeGraphNode[], edges: KnowledgeGraphEdge[]): Record<GraphNodeId, Point> {

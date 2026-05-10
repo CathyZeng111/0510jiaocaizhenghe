@@ -572,24 +572,83 @@ pre {
   gap: 14px;
 }
 
-.feedback-form {
+.chat-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   border: 1px solid #dce4ee;
   border-radius: 8px;
   background: #ffffff;
   padding: 12px;
 }
 
-.feedback-form label,
+.chat-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #33445d;
+}
+
+.chat-history {
+  display: flex;
+  max-height: 280px;
+  min-height: 170px;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.chat-empty {
+  border: 1px dashed #d4deec;
+  border-radius: 8px;
+  color: #66758d;
+  line-height: 1.55;
+  padding: 12px;
+}
+
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border: 1px solid #e1e7f0;
+  border-radius: 8px;
+  padding: 9px 10px;
+}
+
+.chat-message.teacher {
+  background: #f4f8ff;
+}
+
+.chat-message.system {
+  background: #fbfcfe;
+}
+
+.chat-message span {
+  color: #5f6f86;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.chat-message p {
+  margin: 0;
+  color: #172033;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 .decision-panel h3 {
   color: #33445d;
   font-size: 14px;
   font-weight: 800;
 }
 
-.feedback-form textarea {
+.chat-form textarea {
   min-height: 86px;
   resize: vertical;
   border: 1px solid #cfd8e6;
@@ -600,7 +659,7 @@ pre {
   padding: 10px;
 }
 
-.feedback-form button {
+.chat-form button {
   display: inline-flex;
   cursor: pointer;
   align-items: center;
